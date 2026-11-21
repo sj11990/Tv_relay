@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: tv-relay
+    runtime: python
+    plan: free
+    buildCommand: "echo no build"
+    startCommand: "python tv_relay.py"
+    envVars:
+      - key: SECRET
+        sync: false
