@@ -21,6 +21,7 @@ Actions: buy, sell, close, close_buy, close_sell
 import argparse
 import json
 import os
+import re
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -49,6 +50,22 @@ def save():
     os.replace(tmp, ARGS.store)
 
 
+def parse_text(text):
+    """Find buy / sell / close in free alert text (first keyword wins)."""
+    t = re.sub(r"[^a-z_ ]", " ", text.lower())
+    words = t.split()
+    is_close = any(w in ("close", "exit", "flat", "close_buy", "close_sell") for w in words)
+    side = ""
+    for w in words:
+        if w in ("buy", "long", "bull", "bullish", "close_buy"):
+            side = "buy"; break
+        if w in ("sell", "short", "bear", "bearish", "close_sell"):
+            side = "sell"; break
+    if is_close:
+        return "close_" + side if side else "close"
+    return side
+
+
 class Handler(BaseHTTPRequestHandler):
     def _send(self, code, text):
         body = text.encode()
@@ -59,20 +76,28 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_POST(self):
-        if urlparse(self.path).path != "/webhook":
+        u = urlparse(self.path)
+        if u.path != "/webhook":
             return self._send(404, "not found")
         raw = self.rfile.read(int(self.headers.get("Content-Length", 0) or 0)).decode("utf-8", "replace")
+        url_secret = parse_qs(u.query).get("secret", [""])[0]
         try:
             msg = json.loads(raw)
+            if not isinstance(msg, dict):
+                raise ValueError
         except ValueError:
-            # plain-text alert such as "buy" is accepted only if no secret is set
-            msg = {"action": raw.strip(), "secret": ""}
-        if str(msg.get("secret", "")) != ARGS.secret:
+            # any indicator's own alert text, e.g. "Master Suite BUY XAUUSD @ 4071"
+            msg = {"action": parse_text(raw)}
+        secret = str(msg.get("secret", "") or url_secret)
+        if secret != ARGS.secret:
             print("rejected: bad secret")
             return self._send(403, "bad secret")
         action = str(msg.get("action", "")).strip().lower()
         if action not in ACTIONS:
-            return self._send(400, "unknown action: " + action)
+            action = parse_text(action)
+        if action not in ACTIONS:
+            print("ignored, no buy/sell/close found in:", raw[:200])
+            return self._send(400, "unknown action")
         try:
             lots = float(msg.get("lots", 0) or 0)
         except (TypeError, ValueError):
