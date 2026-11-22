@@ -152,7 +152,7 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             after = 0
         with lock:
-            if after > state["next_id"]:      # relay was reset: resend recent ones
+            if after >= state["next_id"]:     # EA saw ids this store never gave out: relay was reset, resend recent ones
                 after = 0
             rows = [s for s in state["signals"] if s["id"] > after]
         # id;time;action;lots;price;sl;tp  (older EAs read only the first four)
