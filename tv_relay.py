@@ -27,7 +27,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-ACTIONS = {"buy", "long", "sell", "short", "close", "close_buy", "close_sell"}
+ACTIONS = {"buy", "long", "sell", "short", "close", "close_buy", "close_sell", "move_sl_buy", "move_sl_sell"}
 KEEP = 500                      # signals kept in memory / on disk
 lock = threading.Lock()
 state = {"next_id": 1, "signals": []}
@@ -50,12 +50,28 @@ def save():
     os.replace(tmp, ARGS.store)
 
 
+NUM = r"([0-9]+(?:\.[0-9]+)?)"
+
+
+def parse_levels(text, action):
+    """Prices in a Master Suite alert: entry (@ ~X), SL, TP; for a stop move: entry X stop Y."""
+    def grab(pat):
+        m = re.search(pat, text, re.I)
+        return float(m.group(1)) if m else 0.0
+    if action.startswith("move_sl"):
+        return grab(r"entry\s+" + NUM), grab(r"stop\s+" + NUM), 0.0
+    return grab(r"@\s*~?\s*" + NUM), grab(r"\bSL\s+" + NUM), grab(r"\bTP\s+" + NUM)
+
+
 def parse_text(text):
     """Find buy / sell / close in free alert text (first keyword wins)."""
     t = re.sub(r"[^a-z_ ]", " ", text.lower())
     words = t.split()
     # Master Suite "STOP BUY entry X stop Y" only reports a moved stop: never a new trade
-    if "stop" in words[:4] and "entry" in words:
+    if "stop" in words[:4] and "entry" in words:     # stop moved: only "Copy alert" mode EAs use it
+        for w in words:
+            if w in ("buy", "sell"):
+                return "move_sl_" + w
         return ""
     # info-only alerts (session opening candle, new / swept levels): never a trade
     if "candle" in words or "swept" in words or "level" in words:
@@ -104,12 +120,18 @@ class Handler(BaseHTTPRequestHandler):
         if action not in ACTIONS:
             print("ignored, no buy/sell/close found in:", raw[:200])
             return self._send(400, "unknown action")
-        try:
-            lots = float(msg.get("lots", 0) or 0)
-        except (TypeError, ValueError):
-            lots = 0.0
+        def num(k):
+            try:
+                return float(msg.get(k, 0) or 0)
+            except (TypeError, ValueError):
+                return 0.0
+        lots = num("lots")
+        price, sl, tp = num("price"), num("sl"), num("tp")
+        if not (price or sl or tp):
+            price, sl, tp = parse_levels(raw, action)
         with lock:
-            sig = {"id": state["next_id"], "ts": int(time.time()), "action": action, "lots": lots}
+            sig = {"id": state["next_id"], "ts": int(time.time()), "action": action, "lots": lots,
+                   "price": price, "sl": sl, "tp": tp}
             state["next_id"] += 1
             state["signals"] = (state["signals"] + [sig])[-KEEP:]
             save()
@@ -133,7 +155,9 @@ class Handler(BaseHTTPRequestHandler):
             if after > state["next_id"]:      # relay was reset: resend recent ones
                 after = 0
             rows = [s for s in state["signals"] if s["id"] > after]
-        text = "".join("%d;%d;%s;%g\n" % (s["id"], s["ts"], s["action"], s["lots"]) for s in rows)
+        # id;time;action;lots;price;sl;tp  (older EAs read only the first four)
+        text = "".join("%d;%d;%s;%g;%g;%g;%g\n" % (s["id"], s["ts"], s["action"], s["lots"], s.get("price", 0),
+                                                   s.get("sl", 0), s.get("tp", 0)) for s in rows)
         self._send(200, text)
 
     def log_message(self, *a):          # keep the console quiet for polls
