@@ -54,7 +54,13 @@ def parse_text(text):
     """Find buy / sell / close in free alert text (first keyword wins)."""
     t = re.sub(r"[^a-z_ ]", " ", text.lower())
     words = t.split()
-    is_close = any(w in ("close", "exit", "flat", "close_buy", "close_sell") for w in words)
+    # Master Suite "STOP BUY entry X stop Y" only reports a moved stop: never a new trade
+    if "stop" in words[:4] and "entry" in words:
+        return ""
+    # info-only alerts (session opening candle, new / swept levels): never a trade
+    if "candle" in words or "swept" in words or "level" in words:
+        return ""
+    is_close = any(w in ("close", "closed", "exit", "exited", "flat", "close_buy", "close_sell") for w in words)
     side = ""
     for w in words:
         if w in ("buy", "long", "bull", "bullish", "close_buy"):
